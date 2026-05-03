@@ -126,9 +126,9 @@ class JobRecommender:
             exp_match = 1 if resume_exp >= job_exp else 0
 
             score = (
-                0.5 * tfidf_sim[i] +
-                0.4 * bert_sim[i] +
-                0.1 * skill_overlap +
+                0.48 * tfidf_sim[i] +
+                0.38 * bert_sim[i] +
+                0.09 * skill_overlap +
                 0.05 * exp_match
             )
 
