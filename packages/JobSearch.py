@@ -62,13 +62,27 @@ def load_jobs_data(path1, path2):
     jobs_df['text'] = combine(jobs_df, ['title', 'description'])
     jobs2_df['text'] = combine(jobs2_df, ['job_title', 'job_description'])
 
+    col_renames = {}
+    if 'job_title' in jobs2_df.columns and 'title' not in jobs2_df.columns:
+        col_renames['job_title'] = 'title'
+    if 'company' in jobs2_df.columns and 'company_name' not in jobs2_df.columns:
+        col_renames['company'] = 'company_name'
+    if 'country' in jobs2_df.columns and 'location' not in jobs2_df.columns:
+        col_renames['country'] = 'location'
+    if col_renames:
+        jobs2_df = jobs2_df.rename(columns=col_renames)
+
     jobs_df['cleaned'] = jobs_df['text'].apply(clean_text)
     jobs2_df['cleaned'] = jobs2_df['text'].apply(clean_text)
 
     jobs = pd.concat([jobs_df, jobs2_df], ignore_index=True)
     jobs = jobs.drop_duplicates(subset=['cleaned']).reset_index(drop=True)
 
-    # Limit for performance (important)
+    for col in ['title', 'company_name', 'location']:
+        if col not in jobs.columns:
+            jobs[col] = ''
+
+    # Limit for performance
     jobs = jobs.sample(500, random_state=42)
 
     return jobs
@@ -125,10 +139,11 @@ class JobRecommender:
             skill_overlap = len(set(resume_skills) & set(job_skills))
             exp_match = 1 if resume_exp >= job_exp else 0
 
+            # Normalise skill_overlap to [0, 1] so it cannot push the weighted sum above 1.0.
             score = (
                 0.48 * tfidf_sim[i] +
                 0.38 * bert_sim[i] +
-                0.09 * skill_overlap +
+                0.09 * min(skill_overlap / 10.0, 1.0) +
                 0.05 * exp_match
             )
 
@@ -139,7 +154,8 @@ class JobRecommender:
         results = self.jobs_df.iloc[top_indices].copy()
         results['score'] = [scores[i] for i in top_indices]
 
-        return results[['title', 'company_name', 'location', 'score']].to_dict(orient="records")
+        output = results[['title', 'company_name', 'location', 'score']].fillna('')
+        return output.to_dict(orient="records")
 
 def build_model():
 
@@ -164,7 +180,9 @@ def make_handler(model):
 
         def _write_json(self, status_code, payload):
             self._set_json_headers(status_code)
-            self.wfile.write(json.dumps(payload).encode("utf-8"))
+            self.wfile.write(
+                json.dumps(payload, allow_nan=False).encode("utf-8")
+            )
 
         def do_OPTIONS(self):
             self._set_json_headers(200)
@@ -189,12 +207,16 @@ def make_handler(model):
                 self._write_json(400, {"error": "resume_text is required"})
                 return
 
-            if not isinstance(top_n, int) or top_n <= 0:
+            if not isinstance(top_n, int) or isinstance(top_n, bool) or top_n <= 0:
                 self._write_json(400, {"error": "top_n must be a positive integer"})
                 return
 
-            results = model.recommend(resume_text, top_n=top_n)
-            self._write_json(200, {"results": results})
+            try:
+                results = model.recommend(resume_text, top_n=top_n)
+                self._write_json(200, {"results": results})
+            except Exception as e:
+                print(f"[ERROR] recommend() raised: {e}")
+                self._write_json(500, {"error": "Internal server error during recommendation"})
 
         def log_message(self, format, *args):
             return
